@@ -1,5 +1,5 @@
 ---
-name: .codex/skills/ask/SKILL.md
+name: ask
 description: Ask a second AI model through OpenRouter and bring its answer back for comparison. Use when the user invokes /ask or $ask, requests a second-model opinion, or names an OpenRouter model to review text or explicitly selected local files.
 ---
 
