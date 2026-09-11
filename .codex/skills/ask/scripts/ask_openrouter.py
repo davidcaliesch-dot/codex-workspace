@@ -23,6 +23,89 @@ DEFAULT_ALIASES = {
 }
 
 
+class ResponseError(ValueError):
+    """An OpenRouter response did not contain a usable answer."""
+
+
+def _error_summary(error: object) -> str | None:
+    """Return a safe, compact summary without serializing arbitrary metadata."""
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    if not isinstance(error, dict):
+        return None
+
+    details = []
+    code = error.get("code")
+    message = error.get("message")
+    if isinstance(code, (str, int)):
+        details.append(f"code={code}")
+    if isinstance(message, str) and message.strip():
+        details.append(f"message={message.strip()}")
+    return ", ".join(details) or None
+
+
+def _message_text(content: object) -> str | None:
+    """Extract text from either string or structured message content."""
+    if isinstance(content, str):
+        return content if content.strip() else None
+    if not isinstance(content, list):
+        return None
+
+    parts = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    answer = "".join(parts)
+    return answer if answer.strip() else None
+
+
+def extract_answer(result: object) -> str:
+    """Validate a chat completion and return its non-empty text answer."""
+    if not isinstance(result, dict):
+        raise ResponseError("response body is not a JSON object")
+
+    top_error = _error_summary(result.get("error"))
+    if top_error:
+        raise ResponseError(f"OpenRouter error: {top_error}")
+
+    choices = result.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ResponseError("response has no choices")
+
+    diagnostics = []
+    for index, choice in enumerate(choices):
+        if not isinstance(choice, dict):
+            diagnostics.append(f"choice {index}: invalid object")
+            continue
+
+        choice_error = _error_summary(choice.get("error"))
+        finish_reason = choice.get("finish_reason")
+        native_reason = choice.get("native_finish_reason")
+        reason = finish_reason if isinstance(finish_reason, str) else "missing"
+        if isinstance(native_reason, str) and native_reason != finish_reason:
+            reason += f" (native: {native_reason})"
+
+        message = choice.get("message")
+        if isinstance(message, dict):
+            answer = _message_text(message.get("content"))
+            if answer is not None:
+                return answer
+            message_error = _error_summary(message.get("error"))
+        else:
+            message_error = None
+
+        error = choice_error or message_error
+        detail = f"choice {index}: empty message.content; finish_reason={reason}"
+        if error:
+            detail += f"; error={error}"
+        diagnostics.append(detail)
+
+    raise ResponseError("; ".join(diagnostics))
+
+
 def aliases() -> dict[str, str]:
     return {
         name: os.environ.get(f"ASK_MODEL_{name.upper()}", model)
@@ -109,9 +192,9 @@ def main() -> int:
         print(f"OpenRouter request failed: {exc}", file=sys.stderr)
         return 1
     try:
-        answer = result["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        print("error: unexpected OpenRouter response", file=sys.stderr)
+        answer = extract_answer(result)
+    except ResponseError as exc:
+        print(f"error: unexpected OpenRouter response: {exc}", file=sys.stderr)
         return 1
     print(answer)
     return 0
